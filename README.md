@@ -1,2 +1,2 @@
 # CS147A
-FInal Project for CS147A
+Final Project for CS147A
