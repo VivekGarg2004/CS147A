@@ -43,7 +43,7 @@ def create_sequences(data, input_len=12, output_len=3):
     return np.array(X), np.array(y)
 
 INPUT_LEN  = 12   
-OUTPUT_LEN = 3     
+OUTPUT_LEN = 3   
 
 X, y = create_sequences(data, INPUT_LEN, OUTPUT_LEN)
 
