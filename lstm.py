@@ -4,11 +4,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 
+#Data Processing
 volume_df = pd.read_csv('data/sensor_volume_150.csv', header=0)
-print(volume_df.shape)
 
 adj_mat = pd.read_pickle('data/adj_mat_volume.pkl')
 
+#Row-normalize adj matrix and add self loops
 A = adj_mat[2].astype(np.float32)
 np.fill_diagonal(A, 0)       
 np.fill_diagonal(A, 1.0)       
@@ -17,11 +18,9 @@ degree = A.sum(axis=1, keepdims=True)
 degree[degree == 0] = 1        
 A_hat = A / degree           
 
-print(A_hat.sum(axis=1)[:5])  
-print(A_hat[0].max())         
-
 A_hat_tensor = torch.FloatTensor(A_hat)
 
+#Normalize Data
 mean = volume_df.mean(axis=0)
 std  = volume_df.std(axis=0)
 std[std == 0] = 1  
@@ -47,6 +46,7 @@ OUTPUT_LEN = 3
 
 X, y = create_sequences(data, INPUT_LEN, OUTPUT_LEN)
 
+#Train/Test/Val split
 n = len(X)
 train_end = int(n * 0.7)
 val_end = int(n * 0.85)
@@ -55,6 +55,8 @@ X_train, y_train = X[:train_end], y[:train_end]
 X_val, y_val = X[train_end:val_end], y[train_end:val_end]
 X_test, y_test = X[val_end:], y[val_end:]
 
+
+#Spatial convolution layer class
 class GraphConv(nn.Module):
     """GCN layer: X' = relu(A_hat @ X @ W + b)"""
     def __init__(self, in_features, out_features):
@@ -64,7 +66,7 @@ class GraphConv(nn.Module):
     def forward(self, x, A_hat):
         return torch.relu(self.linear(A_hat @ x))
 
-
+#Temporal LSTM class
 class GCNLSTM(nn.Module):
     def __init__(self, num_nodes, in_features, gcn_hidden, lstm_hidden, output_len):
         super().__init__()
@@ -113,11 +115,13 @@ def to_loader(X_arr, y_arr, batch_size=64, shuffle=True):
 train_loader = to_loader(X_train, y_train, shuffle=True)
 val_loader   = to_loader(X_val, y_val, shuffle=False)
 
+#Define model
 model = GCNLSTM(
     num_nodes=150, in_features=1, gcn_hidden=32,
     lstm_hidden=64, output_len=OUTPUT_LEN
 ).to(device)
 
+#Hyperparameters selected through torch
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
 criterion = nn.MSELoss()
@@ -127,6 +131,7 @@ best_val_loss = float('inf')
 patience_counter = 0
 EARLY_STOP_PATIENCE = 15
 
+#Training loop
 for epoch in range(EPOCHS):
     model.train()
     train_loss = 0
@@ -199,6 +204,7 @@ print(f"RMSE: {rmse:.2f}")
 print(f"MAPE: {mape:.2f}%")
 print(f"MAE/Mean: {mae / volume_df.values.mean() * 100:.1f}%")  # relative error
 
+#Save model checkpoint
 SAVE_PATH = 'gcn_lstm_checkpoint.pth'
 
 checkpoint = {
