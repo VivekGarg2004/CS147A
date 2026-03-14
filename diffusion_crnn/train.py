@@ -37,8 +37,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import config as cfg
 from src.data_loader  import load_dataset, compute_metrics, masked_mae, masked_rmse
 from src.graph_utils  import (load_adjacency, prepare_graph_tensors,
-                               build_distance_adjacency, build_correlation_adjacency)
-from src.dcrnn_model  import DCRNN
+                               build_distance_adjacency)
+from models.DCRNN  import DCRNN
 import pandas as pd
 
 
@@ -49,7 +49,7 @@ import pandas as pd
 def parse_args():
     parser = argparse.ArgumentParser(description="Train DCRNN")
     parser.add_argument("--graph", type=str, default="distance",
-                        choices=["original", "distance", "correlation"],
+                        choices=["original", "distance"],
                         help="Which pre-built graph to use as fixed adjacency")
     parser.add_argument("--graph_mode", type=str, default="both",
                         choices=["fixed", "learned", "both"],
@@ -87,12 +87,6 @@ def load_graph(graph_method: str, volume_raw: np.ndarray):
             threshold = cfg.GRAPH_THRESHOLD,
             verbose   = True,
         )
-    elif graph_method == "correlation":
-        adj = build_correlation_adjacency(
-            volume_raw,
-            threshold = cfg.CORR_THRESHOLD,
-            verbose   = True,
-        )
     else:
         raise ValueError(f"Unknown graph method: {graph_method}")
 
@@ -105,16 +99,6 @@ def load_graph(graph_method: str, volume_raw: np.ndarray):
 # ---------------------------------------------------------------------------
 
 def get_teacher_forcing_prob(step: int) -> float:
-    """
-    Linear decay from SCHEDULED_SAMPLING_START to SCHEDULED_SAMPLING_MAX
-    over SCHEDULED_SAMPLING_STEPS steps.
-
-    Early training: low probability (mostly teacher forcing / ground truth)
-    Later training: higher probability (model uses its own predictions more)
-
-    This is the opposite of the usual convention — here the probability
-    is the chance of using the MODEL'S OWN prediction, not ground truth.
-    """
     progress = min(step / cfg.SCHEDULED_SAMPLING_STEPS, 1.0)
     return (cfg.SCHEDULED_SAMPLING_START
             + progress * (cfg.SCHEDULED_SAMPLING_MAX - cfg.SCHEDULED_SAMPLING_START))
@@ -307,8 +291,8 @@ def train(
     graph_mode: str    = "both",
     use_attention: bool = True,
     use_learned_adj: bool = True,
-    num_epochs: int    = None,
-    tag: str           = None,
+    num_epochs: int    = 10,
+    tag: str           = "None",
 ):
     if num_epochs is None:
         num_epochs = cfg.NUM_EPOCHS
@@ -358,8 +342,6 @@ def train(
         output_seq_len   = cfg.OUTPUT_SEQ_LEN,
         num_layers       = cfg.NUM_LAYERS,
         K                = cfg.DIFFUSION_K,
-        use_attention    = use_attention,
-        attention_heads  = cfg.ATTENTION_HEADS,
         use_learned_adj  = use_learned_adj,
         graph_mode       = graph_mode if use_learned_adj else "fixed",
     ).to(cfg.DEVICE)
@@ -495,7 +477,6 @@ def train(
 ABLATION_CONFIGS = [
     # (graph_method, graph_mode, use_attention, use_learned_adj, tag)
     ("distance",    "fixed",   False, False, "baseline_dcrnn_distance"),
-    ("correlation", "fixed",   False, False, "baseline_dcrnn_correlation"),
     ("original",    "fixed",   False, False, "baseline_dcrnn_original"),
     ("distance",    "fixed",   True,  False, "dcrnn_attention"),
     ("distance",    "learned", False, True,  "dcrnn_learned_adj"),

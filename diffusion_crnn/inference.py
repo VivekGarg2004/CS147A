@@ -1,23 +1,3 @@
-"""
-inference.py
-
-Standalone inference script. Load a trained checkpoint and run predictions
-on the test set, a custom date range, or a single input window.
-
-Usage:
-    # Run inference on test set using a saved checkpoint
-    python inference.py --tag full_model
-
-    # Compare all trained models side by side
-    python inference.py --compare
-
-    # Predict from a specific time window (e.g. hour index 10000)
-    python inference.py --tag full_model --predict_from 10000
-
-    # Print a summary table of all saved results without re-running
-    python inference.py --summary
-"""
-
 import os
 import sys
 import json
@@ -31,9 +11,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import config as cfg
 from src.data_loader  import load_dataset, compute_metrics, ZScoreScaler
-from src.graph_utils  import (build_distance_adjacency, build_correlation_adjacency,
+from src.graph_utils  import (build_distance_adjacency,
                                prepare_graph_tensors, load_adjacency)
-from src.dcrnn_model  import DCRNN
+from models.DCRNN  import DCRNN
 import pandas as pd
 
 
@@ -57,20 +37,11 @@ def parse_args():
 
 
 # ---------------------------------------------------------------------------
-# Load checkpoint and reconstruct model
+# Inference contributions
 # ---------------------------------------------------------------------------
 
 def load_checkpoint(tag: str):
-    """
-    Load a saved checkpoint and reconstruct the model.
 
-    The checkpoint stores model_state but not the architecture config,
-    so we rebuild the model from config.py and load the weights.
-
-    Returns:
-        model:   loaded DCRNN in eval mode
-        metadata: dict with epoch, val_mae etc.
-    """
     ckpt_path = os.path.join(cfg.CHECKPOINT_DIR, tag, "best_model.pt")
     assert os.path.exists(ckpt_path), (
         f"No checkpoint found at {ckpt_path}\n"
@@ -101,8 +72,6 @@ def load_checkpoint(tag: str):
         output_seq_len   = cfg.OUTPUT_SEQ_LEN,
         num_layers       = cfg.NUM_LAYERS,
         K                = cfg.DIFFUSION_K,
-        use_attention    = use_attention,
-        attention_heads  = cfg.ATTENTION_HEADS,
         use_learned_adj  = use_learned_adj,
         graph_mode       = graph_mode,
     ).to(cfg.DEVICE)
@@ -118,10 +87,8 @@ def load_checkpoint(tag: str):
     return model, ckpt
 
 
-# ---------------------------------------------------------------------------
-# Load graph (mirrors train.py logic)
-# ---------------------------------------------------------------------------
 
+# Load graph (mirrors train.py logic)
 def load_graph_for_tag(tag: str, volume_raw: np.ndarray):
     """Infer which graph to use from the tag name."""
     if "correlation" in tag:
@@ -131,7 +98,7 @@ def load_graph_for_tag(tag: str, volume_raw: np.ndarray):
     else:
         graph_method = "distance"
 
-    # Load graph — correlation uses training data only (no leakage)
+
     loc_df  = pd.read_csv(cfg.LOCATIONS_PATH)
     lat_col = next(c for c in loc_df.columns if 'lat' in c.lower())
     lon_col = next(c for c in loc_df.columns if 'lon' in c.lower())
@@ -141,13 +108,6 @@ def load_graph_for_tag(tag: str, volume_raw: np.ndarray):
         adj = build_distance_adjacency(
             coords, sigma=cfg.GRAPH_SIGMA,
             threshold=cfg.GRAPH_THRESHOLD, verbose=False
-        )
-    elif graph_method == "correlation":
-        T         = volume_raw.shape[0]
-        train_end = int(T * cfg.TRAIN_RATIO)
-        adj = build_correlation_adjacency(
-            volume_raw[:train_end],
-            threshold=cfg.CORR_THRESHOLD, verbose=False
         )
     else:
         adj = load_adjacency(cfg.ADJ_PKL_PATH, method="original", verbose=False)
@@ -195,8 +155,6 @@ def run_inference(model, loader, T_f, T_b, scaler):
 def predict_single_window(model, T_f, T_b, scaler, volume_raw, start_hour: int):
     """
     Run inference on a single 12-hour input window starting at start_hour.
-
-    Useful for inspecting what the model predicts for a specific time period.
 
     Args:
         start_hour: index into the full dataset (0–13092)

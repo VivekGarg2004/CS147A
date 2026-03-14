@@ -6,10 +6,6 @@ Handles everything graph-related:
   - Computing diffusion transition matrices (T_f, T_b)
   - Converting to torch sparse tensors
   - Diagnostic utilities
-
-Two approaches are supported:
-  1. Distance-based adjacency  (Gaussian kernel on haversine distance)
-  2. Correlation-based adjacency (Pearson correlation on time series)
 """
 
 import numpy as np
@@ -18,20 +14,8 @@ import pickle
 import torch
 
 
-# ---------------------------------------------------------------------------
-# Haversine distance
-# ---------------------------------------------------------------------------
-
+# Haversine distance bc earth
 def haversine_matrix(coords: np.ndarray) -> np.ndarray:
-    """
-    Compute pairwise haversine distances between all sensors.
-
-    Args:
-        coords: (N, 2) array of [latitude, longitude] in decimal degrees
-
-    Returns:
-        dist: (N, N) matrix of distances in kilometres
-    """
     lat = np.radians(coords[:, 0])
     lon = np.radians(coords[:, 1])
 
@@ -45,7 +29,7 @@ def haversine_matrix(coords: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Approach 1 — Distance-based adjacency
+# Distance-based adjacency
 # ---------------------------------------------------------------------------
 
 def build_distance_adjacency(
@@ -56,10 +40,6 @@ def build_distance_adjacency(
 ) -> np.ndarray:
     """
     Build a Gaussian-kernel weighted adjacency matrix from sensor coordinates.
-
-    The weight between sensors i and j is:
-        w_ij = exp(-dist(i,j)^2 / sigma^2)   if w_ij >= threshold
-        w_ij = 0                               otherwise
 
     Self-loops are added after thresholding (diagonal = 1).
 
@@ -88,13 +68,9 @@ def build_distance_adjacency(
         if verbose:
             print(f"[graph] Using sigma = {sigma:.2f} km")
 
-    # Gaussian kernel
     adj = np.exp(-(dist ** 2) / (sigma ** 2))
-
-    # Zero out sub-threshold edges
     adj[adj < threshold] = 0.0
 
-    # Force diagonal to exactly 1 (self-loops)
     np.fill_diagonal(adj, 1.0)
 
     # Guarantee no isolated nodes — connect each to its nearest neighbour
@@ -120,122 +96,31 @@ def build_distance_adjacency(
 
 
 # ---------------------------------------------------------------------------
-# Approach 2 — Correlation-based adjacency
-# ---------------------------------------------------------------------------
-
-def build_correlation_adjacency(
-    volume: np.ndarray,
-    threshold: float = 0.7,
-    verbose: bool = True,
-) -> np.ndarray:
-    """
-    Build an adjacency matrix from Pearson correlations between sensor
-    time series. Sensors with highly correlated volume patterns get an edge.
-
-    This captures *functional* similarity — sensors that behave alike —
-    rather than physical proximity.  Useful when the road network geometry
-    is unavailable or unreliable.
-
-    Args:
-        volume:    (T, N) array of traffic volumes
-        threshold: Correlations below this are zeroed out.
-                   Start at 0.7; lower = denser graph.
-        verbose:   Print graph statistics
-
-    Returns:
-        adj: (N, N) correlation-weighted adjacency matrix with self-loops
-    """
-    # Ensure volume is (T, N) — sensors are columns
-    if volume.shape[0] < volume.shape[1]:
-        # Looks like (N, T) — transpose to (T, N)
-        volume = volume.T
-    T, N = volume.shape
-    assert N <= 500, (
-        f"Got N={N} which looks like timesteps not sensors. "
-        f"volume should be (T, N), got {volume.shape}"
-    )
-
-    # Remove global trend before correlating — raw traffic volumes are all
-    # correlated with each other (rush hour affects every sensor) which makes
-    # raw Pearson correlation useless as a graph signal. Correlating residuals
-    # captures which sensors deviate from the citywide average *together*,
-    # which is a much more meaningful local relationship.
-    global_mean = volume.mean(axis=1, keepdims=True)   # (T, 1) mean across sensors
-    residuals   = volume - global_mean                  # (T, N) local deviations
-
-    # np.corrcoef expects (N, T) — each row is one sensor's time series
-    corr = np.corrcoef(residuals.T)                     # (N, N)
-    assert corr.shape == (N, N), f"Expected ({N},{N}), got {corr.shape}"
-
-    # Only keep positive correlations above threshold
-    adj = np.where(corr >= threshold, corr, 0.0)
-
-    # Self-loops
-    np.fill_diagonal(adj, 1.0)
-
-    if verbose:
-        _print_graph_stats(adj, label="Correlation-based")
-
-    return adj.astype(np.float32)
-
-
-# ---------------------------------------------------------------------------
 # Transition matrices for diffusion convolution
 # ---------------------------------------------------------------------------
 
 def compute_transition_matrices(adj: np.ndarray):
     """
-    Compute the forward and backward transition matrices used in DCRNN's
-    diffusion convolution.
+    Compute forward and backward transition matrices for diffusion convolution.
 
         T_f = D_out^{-1} A      (row-normalised  — outgoing traffic)
         T_b = D_in^{-1}  A^T    (col-normalised  — incoming traffic)
-
-    For an undirected graph T_b = T_f^T, but we compute both explicitly
-    so the code works for directed graphs too.
-
-    Args:
-        adj: (N, N) adjacency matrix WITH self-loops
-
-    Returns:
-        T_f: (N, N) forward  transition matrix
-        T_b: (N, N) backward transition matrix
     """
-    # Out-degree (row sum) for forward
+    # Out-degree 
     d_out = adj.sum(axis=1)
     # Guard against zero-degree nodes (isolated after thresholding)
     d_out = np.where(d_out == 0, 1.0, d_out)
-    T_f = adj / d_out[:, None]              # row normalise
+    T_f = adj / d_out[:, None]              
 
-    # In-degree (col sum) for backward
+    # In-degree 
     d_in = adj.sum(axis=0)
     d_in = np.where(d_in == 0, 1.0, d_in)
-    T_b = adj.T / d_in[:, None]            # row normalise of transpose
+    T_b = adj.T / d_in[:, None]            
 
     return T_f.astype(np.float32), T_b.astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
-# Torch conversion
-# ---------------------------------------------------------------------------
-
-def to_sparse_tensor(matrix: np.ndarray) -> torch.Tensor:
-    """
-    Convert a dense numpy adjacency / transition matrix to a torch sparse
-    COO tensor.  Sparse format matters for large graphs; at N=150 dense
-    is fine too, but we keep sparse for consistency with larger datasets.
-
-    Args:
-        matrix: (N, N) numpy array
-
-    Returns:
-        sparse_tensor: torch.sparse_coo_tensor on CPU
-    """
-    matrix_t = torch.FloatTensor(matrix)
-    indices = matrix_t.nonzero(as_tuple=False).T          # (2, nnz)
-    values = matrix_t[indices[0], indices[1]]              # (nnz,)
-    return torch.sparse_coo_tensor(indices, values, matrix_t.shape)
-
+#utils bc issues with sparse tensors on MPS and small graph size (N=150) where dense is fine
 
 def prepare_graph_tensors(adj: np.ndarray, device: torch.device = None):
     """
@@ -260,11 +145,6 @@ def prepare_graph_tensors(adj: np.ndarray, device: torch.device = None):
     T_b_t = torch.FloatTensor(T_b).to(device)
     return T_f_t, T_b_t
 
-
-# ---------------------------------------------------------------------------
-# Diagnostics
-# ---------------------------------------------------------------------------
-
 def _print_graph_stats(adj: np.ndarray, label: str = "Graph"):
     N = adj.shape[0]
     adj_no_diag = adj.copy()
@@ -283,12 +163,7 @@ def _print_graph_stats(adj: np.ndarray, label: str = "Graph"):
     print(f"  Isolated nodes: {isolated}")
     print(f"  Sparsity      : {sparsity:.4f}")
 
-
 def diagnose_original_adjacency(pkl_path: str):
-    """
-    Quick diagnostic on the raw pkl adjacency to understand what's in it
-    before deciding whether to use or rebuild it.
-    """
     with open(pkl_path, "rb") as f:
         adj = pickle.load(f)
 
@@ -311,34 +186,15 @@ def diagnose_original_adjacency(pkl_path: str):
             print(f"    {p:3d}% → {np.percentile(nonzero, p):.4f}")
 
 
-# ---------------------------------------------------------------------------
-# Convenience loader
-# ---------------------------------------------------------------------------
-
 def load_adjacency(
     pkl_path: str,
     coords: np.ndarray = None,
     volume: np.ndarray = None,
     method: str = "distance",
-    sigma: float = None,
+    sigma: float = 0,
     threshold: float = 0.1,
     verbose: bool = True,
 ) -> np.ndarray:
-    """
-    Master loader. Chooses which adjacency to build based on `method`.
-
-    Args:
-        pkl_path:  Path to original pkl (used for diagnostics)
-        coords:    (N, 2) lat/lon — required if method='distance'
-        volume:    (T, N) volumes  — required if method='correlation'
-        method:    'distance' | 'correlation' | 'original'
-        sigma:     Gaussian bandwidth (distance method only)
-        threshold: Edge threshold
-        verbose:   Print stats
-
-    Returns:
-        adj: (N, N) float32 adjacency with self-loops
-    """
     if method == "original":
         with open(pkl_path, "rb") as f:
             adj = pickle.load(f)[2].astype(np.float32)
@@ -351,11 +207,6 @@ def load_adjacency(
         assert coords is not None, "coords required for distance method"
         return build_distance_adjacency(coords, sigma=sigma,
                                         threshold=threshold, verbose=verbose)
-
-    elif method == "correlation":
-        assert volume is not None, "volume array required for correlation method"
-        return build_correlation_adjacency(volume, threshold=threshold,
-                                           verbose=verbose)
 
     else:
         raise ValueError(f"Unknown method '{method}'. "

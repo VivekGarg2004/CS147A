@@ -69,6 +69,8 @@ class ZScoreScaler:
         """
         mean = torch.FloatTensor(self.mean).to(x.device)   # (1, N)
         std  = torch.FloatTensor(self.std).to(x.device)    # (1, N)
+        mean = mean.unsqueeze(0).unsqueeze(-1)             # (1, N) → (1, 1, N, 1)
+        std  = std.unsqueeze(0).unsqueeze(-1)              # (1, N) → (1, 1, N, 1)
         # Broadcast over all leading dimensions
         return x * std.unsqueeze(-1) + mean.unsqueeze(-1)
 
@@ -76,7 +78,9 @@ class ZScoreScaler:
         """Normalize a tensor (used for scheduled sampling targets)."""
         mean = torch.FloatTensor(self.mean).to(x.device)
         std  = torch.FloatTensor(self.std).to(x.device)
-        return (x - mean.unsqueeze(-1)) / std.unsqueeze(-1)
+        mean = mean.unsqueeze(0).unsqueeze(-1)
+        std  = std.unsqueeze(0).unsqueeze(-1)
+        return (x - mean) / std
 
 
 # ---------------------------------------------------------------------------
